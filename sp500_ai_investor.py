@@ -175,6 +175,9 @@ def build_allocation(
     df: pd.DataFrame, monthly_amount: float, top_n: int, method: str
 ) -> pd.DataFrame:
     df = df.sort_values("score", ascending=False).head(top_n).copy()
+    if len(df) == 0:
+        return df
+
     if method == "Equal weight":
         df["alloc_usd"] = monthly_amount / len(df)
     elif method == "Top 5 equal":
@@ -185,7 +188,11 @@ def build_allocation(
         w = df["score"] - df["score"].min() + 1
         w = w / w.sum()
         df["alloc_usd"] = w * monthly_amount
-    df["shares"] = np.floor(df["alloc_usd"] / df["price"].replace(0, np.nan)).fillna(0).astype(int)
+    df["shares"] = (
+        np.floor(df["alloc_usd"] / df["price"].replace(0, np.nan))
+        .fillna(0)
+        .astype(int)
+    )
     df["dollar_used"] = df["shares"] * df["price"]
     return df
 
@@ -306,6 +313,146 @@ def parse_portfolio_input(text: str) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     df = df.groupby("Ticker", as_index=False)["shares"].sum()
     return df
+
+
+# ------------ Run Guide: Data Sources / Providers panel ------------
+
+def render_data_sources_panel():
+    """
+    Transparency UI. Shows:
+    - left: checkboxes for what the app uses today (and future ideas)
+    - right: details table including Providers + Cost
+    Note: these are informational right now; they don't switch the backend yet.
+    """
+    st.markdown("### Data Sources & Providers (Transparency)")
+    st.caption("Checked = used by the app today (or optional). Unchecked = not implemented yet.")
+
+    # Provider catalog (what exists in the world)
+    providers = [
+        {"id": "local_csv", "label": "Local CSV (sp500_constituents.csv)", "cost": "Free"},
+        {"id": "yahoo", "label": "Yahoo Finance via yfinance", "cost": "Free"},
+        {"id": "openai", "label": "OpenAI (AI analysis text)", "cost": "Varies (ChatGPT plan / API billed separately)"},
+        {"id": "sec", "label": "SEC EDGAR (10-K/10-Q)", "cost": "Free"},
+        {"id": "paid_feeds", "label": "Paid data feeds (FactSet/Bloomberg/Refinitiv/etc.)", "cost": "Paid $$$"},
+        {"id": "hedge_fund", "label": "Proprietary hedge-fund APIs", "cost": "Not publicly available / $$$"},
+        {"id": "hidden_openai_db", "label": "Hidden OpenAI stock databases", "cost": "❌ Not a real option"},
+    ]
+
+    # Sources used by the app (or future)
+    sources = [
+        {
+            "id": "sp500_membership",
+            "label": "S&P 500 membership (tickers, names, sectors)",
+            "status": "Current (in use)",
+            "default": True,
+            "notes": "Loaded from local file: sp500_constituents.csv.",
+            "providers_used": ["local_csv"],
+        },
+        {
+            "id": "market_data",
+            "label": "Market data (price, market cap, P/E, 1y history)",
+            "status": "Current (in use)",
+            "default": True,
+            "notes": "Pulled using yfinance (Yahoo Finance).",
+            "providers_used": ["yahoo"],
+        },
+        {
+            "id": "ai_briefings",
+            "label": "AI briefings (company explanation text)",
+            "status": "Current (optional feature)",
+            "default": True,
+            "notes": "OpenAI does NOT provide stock prices; it summarizes the data we send it.",
+            "providers_used": ["openai"],
+        },
+        {
+            "id": "sec_filings",
+            "label": "SEC EDGAR filings (10-K/10-Q) summarization",
+            "status": "Future (not implemented)",
+            "default": False,
+            "notes": "Could be added later to summarize filings directly from the SEC.",
+            "providers_used": ["sec"],
+        },
+        {
+            "id": "paid_data",
+            "label": "Professional paid feeds (better fundamentals coverage)",
+            "status": "Future (not implemented)",
+            "default": False,
+            "notes": "Requires paid credentials and integration work.",
+            "providers_used": ["paid_feeds"],
+        },
+        {
+            "id": "hedge_fund_apis",
+            "label": "Proprietary hedge-fund APIs",
+            "status": "Future (not implemented)",
+            "default": False,
+            "notes": "Usually not available; would require legal access + credentials.",
+            "providers_used": ["hedge_fund"],
+        },
+        {
+            "id": "hidden_openai_db",
+            "label": "Hidden OpenAI stock databases",
+            "status": "Not a real option",
+            "default": False,
+            "notes": "Not a real data provider option. OpenAI doesn't offer a hidden stock DB.",
+            "providers_used": ["hidden_openai_db"],
+        },
+    ]
+
+    if "source_selection" not in st.session_state:
+        st.session_state["source_selection"] = {s["id"]: s["default"] for s in sources}
+
+    left, right = st.columns([1, 2], gap="large")
+
+    with left:
+        st.markdown("#### Sources (select)")
+        for s in sources:
+            disabled = (s["status"] == "Not a real option")
+            st.session_state["source_selection"][s["id"]] = st.checkbox(
+                s["label"],
+                value=bool(st.session_state["source_selection"].get(s["id"], s["default"])),
+                disabled=disabled,
+            )
+
+    # Helpers for Providers and Cost columns
+    provider_cost_map = {p["id"]: p["cost"] for p in providers}
+
+    def providers_checklist(used_ids):
+        lines = []
+        for p in providers:
+            mark = "✅" if p["id"] in used_ids else "⬜"
+            lines.append(f"{mark} {p['label']}")
+        return "\n".join(lines)
+
+    def cost_summary(used_ids):
+        # summarize unique costs for used providers
+        costs = []
+        seen = set()
+        for pid in used_ids:
+            c = provider_cost_map.get(pid, "")
+            if c and c not in seen:
+                seen.add(c)
+                costs.append(c)
+        return " | ".join(costs)
+
+    with right:
+        st.markdown("#### Details (including Providers + Cost)")
+        selected = {k for k, v in st.session_state["source_selection"].items() if v}
+
+        rows = []
+        for s in sources:
+            used = s.get("providers_used", [])
+            rows.append(
+                {
+                    "Selected": "Yes" if s["id"] in selected else "No",
+                    "Source": s["label"],
+                    "Providers": providers_checklist(used),
+                    "Cost": cost_summary(used),
+                    "Status": s["status"],
+                    "Notes": s["notes"],
+                }
+            )
+
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 # ------------ Streamlit UI ------------
@@ -474,6 +621,7 @@ elif section == "Run Guide":
 
     (
         tab_run,
+        tab_sources,
         tab_daily,
         tab_monthly,
         tab_buy,
@@ -483,6 +631,7 @@ elif section == "Run Guide":
     ) = st.tabs(
         [
             "Running the App",
+            "Data Sources",
             "Daily Use",
             "Monthly Investing Flow",
             "Buying in Fidelity",
@@ -512,6 +661,9 @@ The Dashboard shows:
 - Portfolio view
 """
         )
+
+    with tab_sources:
+        render_data_sources_panel()
 
     with tab_daily:
         st.markdown(
@@ -723,9 +875,7 @@ else:
 
         st.markdown("---")
         st.subheader("Your Portfolio Overview")
-        st.write(
-            "Paste holdings like: AAPL 100 on one line, MSFT 50 on another."
-        )
+        st.write("Paste holdings like: AAPL 100 on one line, MSFT 50 on another.")
         default_portfolio_text = "AAPL 100\nMSFT 50\nAMZN 40\n"
         portfolio_text = st.text_area("Your positions", value=default_portfolio_text, height=120)
         if st.button("Analyze portfolio"):
